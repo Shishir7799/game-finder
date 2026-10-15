@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Game Finder: Snap It, Find It</title>
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --text:#1c2230; --muted:#667085; --accent:#6c4cf1; --border:#e3e6ee; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151c; --card:#1b2029; --text:#e8ebf2; --muted:#9aa4b8; --border:#2a3140; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:760px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { margin:0 0 4px; font-size:1.7rem; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:16px; margin-bottom:16px; }
+  .drop { display:block; border:2px dashed var(--border); border-radius:12px; padding:24px; text-align:center; cursor:pointer; color:var(--muted); }
+  .drop:hover { border-color:var(--accent); }
+  #preview { max-width:100%; max-height:320px; border-radius:10px; display:none; margin:12px auto 0; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:10px; padding:12px 20px; font-size:1rem; cursor:pointer; margin-top:12px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .err { color:#c0392b; margin-top:12px; }
+  .muted { color:var(--muted); }
+  h2 { font-size:1.1rem; margin:0 0 8px; }
+  .chip { display:inline-block; background:var(--bg); border:1px solid var(--border); border-radius:999px; padding:2px 10px; margin:2px 4px 2px 0; font-size:.85rem; }
+  ul { padding-left:20px; margin:6px 0; }
+  a { color:var(--accent); word-break:break-word; }
+  .links a { display:inline-block; margin:4px 10px 4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Snap It, Find It</h1>
+  <p class="sub">Upload a game cover or an in-game screenshot. Two AI agents identify it and find where to get it.</p>
+  <div class="card">
+    <label class="drop" for="file" id="dropLabel">Click to choose a game photo (PNG, JPG, WEBP)</label>
+    <input id="file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+    <img id="preview" alt="Selected photo preview">
+    <button id="go" disabled>Identify my game</button>
+    <div id="status" class="muted"></div>
+    <div id="error" class="err"></div>
+  </div>
+  <div id="result"></div>
+</main>
+<script>
+  // After deploying the backend on Render, put its URL here (no trailing slash).
+  const API_URL = "http://localhost:8000";
+
+  const $ = (id) => document.getElementById(id);
+  const fileInput = $("file"), go = $("go"), preview = $("preview");
+  let chosen = null;
+
+  function el(tag, text, cls) {
+    const e = document.createElement(tag);
+    if (text !== undefined) e.textContent = text;
+    if (cls) e.className = cls;
+    return e;
+  }
+  function link(url, text) {
+    const a = el("a", text || url);
+    if (/^https?:\/\//i.test(url)) { a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer"; }
+    return a;
+  }
+  function linkList(items, labelKey) {
+    const box = el("div", "", "links");
+    (items || []).forEach((i) => box.appendChild(link(i.url, i[labelKey] || i.url)));
+    return box;
+  }
+  function card(title) { const c = el("div", "", "card"); c.appendChild(el("h2", title)); return c; }
+
+  fileInput.addEventListener("change", () => {
+    chosen = fileInput.files[0] || null;
+    $("error").textContent = "";
+    if (chosen) {
+      preview.src = URL.createObjectURL(chosen);
+      preview.style.display = "block";
+      $("dropLabel").textContent = chosen.name;
+    }
+    go.disabled = !chosen;
+  });
+
+  go.addEventListener("click", async () => {
+    if (!chosen) return;
+    go.disabled = true;
+    $("error").textContent = "";
+    $("result").replaceChildren();
+    $("status").textContent = "Working on it... the first request can take ~30s while the server wakes up.";
+    try {
+      const body = new FormData();
+      body.append("file", chosen);
+      const res = await fetch(API_URL + "/analyze", { method: "POST", body });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Request failed (" + res.status + ")");
+      render(data);
+      $("status").textContent = "";
+    } catch (e) {
+      $("status").textContent = "";
+      $("error").textContent = e.message;
+    } finally {
+      go.disabled = false;
+    }
+  });
+
+  function render(d) {
+    const out = $("result");
+    if (!d.identified) { out.appendChild(el("div", d.message, "card")); return; }
+    const g = d.game;
+    const c1 = card(g.title);
+    if (g.platform) c1.appendChild(el("span", g.platform, "chip"));
+    c1.appendChild(el("span", "confidence " + Math.round(g.confidence * 100) + "%", "chip"));
+    c1.appendChild(el("p", g.evidence, "muted"));
+    out.appendChild(c1);
+
+    const c2 = card("Where to find it");
+    c2.appendChild(linkList(d.store_links, "source"));
+    out.appendChild(c2);
+
+    if (d.web_results.length) {
+      const c3 = card("Web results");
+      const ul = el("ul");
+      d.web_results.forEach((r) => {
+        const li = el("li");
+        li.appendChild(link(r.url, r.title || r.url));
+        if (r.snippet) li.appendChild(el("div", r.snippet, "muted"));
+        ul.appendChild(li);
+      });
+      c3.appendChild(ul);
+      out.appendChild(c3);
+    }
+  }
+</script>
+</body>
+</html>
